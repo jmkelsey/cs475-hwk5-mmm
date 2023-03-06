@@ -3,43 +3,175 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 #include "mmm.h"
 
 /**
  * Allocate and initialize the matrices on the heap. Populate
  * the input matrices with random integers from 0 to 99
  */
-void mmm_init() {
-	// TODO
+
+int size;
+int num_threads;
+
+double **matrix1;
+double **matrix2;
+double **result_seq;
+double **result_par;
+
+void mmm_init(int set_num_threads, int set_size)
+{
+	//set size and num threads
+	num_threads = set_num_threads;
+	size = set_size;
+	//allocate matrixes
+	matrix1 = (double **)malloc(sizeof(double *) * size);
+	matrix2 = (double **)malloc(sizeof(double *) * size);
+	result_seq = (double **)malloc(sizeof(double *) * size);
+	result_par = (double **)malloc(sizeof(double *) * size);
+	//seed random to time
+	srand(time(NULL));
+
+	for (int i = 0; i < size; i++)
+	{
+		//allocate rows
+		matrix1[i] = (double *)malloc(sizeof(double) * size);
+		matrix2[i] = (double *)malloc(sizeof(double) * size);
+		result_seq[i] = (double *)malloc(sizeof(double) * size);
+		result_par[i] = (double *)malloc(sizeof(double) * size);
+	}
+	for (int i = 0; i < size; i++)
+	{
+		for (int j = 0; j < size; j++)
+		{
+			//populate inputs with random numbers and results with 0
+			//just %99 is an int operation so all of the results would effectivley be ints
+			//whats the point of having doubles if we do that???
+			//instead I'm casting to a double, and then effectivley modding them
+			matrix1[i][j] = ((double)rand()/(double)RAND_MAX) * 99;
+			matrix2[i][j] = ((double)rand()/(double)RAND_MAX) * 99;
+			result_seq[i][j] = 0;
+			result_par[i][j] = 0;
+		}
+	}
 }
 
 /**
  * Reset a given matrix to zeroes
  * @param matrix pointer to a 2D array
  */
-void mmm_reset(double **matrix) {
-	// TODO
+void mmm_reset(double **matrix)
+{
+	for (int i = 0; i < size; i++)
+	{
+		for (int j = 0; j < size; j++)
+		{
+			matrix[i][j] = 0;
+		}
+	}
 }
 
 /**
  * Free up memory allocated to all matrices
  */
-void mmm_freeup() {
-	// TODO
+void mmm_freeup()
+{
+	for (int i = 0; i < size; i++)
+	{
+		//free individual rows
+		free(matrix1[i]);
+		free(matrix2[i]);
+		free(result_seq[i]);
+		free(result_par[i]);
+		matrix1[i] = NULL;
+		matrix2[i] = NULL;
+		result_seq[i] = NULL;
+		result_par[i] = NULL;
+	}
+	//free whole matrix
+	free(matrix1);
+	free(matrix2);
+	free(result_seq);
+	free(result_par);
+	//remove dangling pointers
+	matrix1 = NULL;
+	matrix2 = NULL;
+	result_seq = NULL;
+	result_par = NULL;
 }
 
 /**
  * Sequential MMM
  */
-void mmm_seq() {
-	// TODO - code to perform sequential MMM
+void mmm_seq()
+{
+	//good old fashioned matrix multiplication
+	for (int i = 0; i < size; i++)
+	{
+		for (int j = 0; j < size; j++)
+		{
+			for (int k = 0; k < size; k++)
+			{
+				result_seq[i][j] += matrix1[i][k] * matrix2[k][j];
+			}
+		}
+	}
 }
 
-/**
- * Parallel MMM
- */
-void *mmm_par(void *args) {
-	// TODO - code to perform parallel MMM
+//a struct to hold the arguments for pthread_create
+//start and end column
+struct par_args {
+	int start_col;
+	int end_col;
+};
+
+//parallel version! if args are NULL then we are the parent and create threads, and if args are present they are our start and end columns
+void *mmm_par(void *args)
+{
+	// if they are null we are the parent, and do setup on threads
+	if (args == NULL)
+	{
+		// set up the number of threads and how much work per
+		int cols_per_thread = size / num_threads;
+		int cols_leftover = size % num_threads;
+		pthread_t threads[num_threads];
+		// divide work among threads
+		for (int i = 0; i < num_threads; i++)
+		{
+			// create args struct
+			struct par_args *input_args = (struct par_args *)malloc(sizeof(struct par_args));
+			// find out our thread's range
+			input_args->start_col = i * cols_per_thread + (i < cols_leftover ? i : cols_leftover);
+			input_args->end_col = (input_args->start_col) + cols_per_thread + (i < cols_leftover ? 1 : 0);
+			// start up thread
+			pthread_create(&threads[i], NULL, mmm_par, (void *)input_args);
+		}
+		// wait for them to finish
+		for (int i = 0; i < num_threads; i++)
+		{
+			pthread_join(threads[i], NULL);
+		}
+		return NULL;
+	}
+	else
+	{
+		// we are thread process! use args to do work
+		struct par_args *input_args = (struct par_args *) args;
+    	int start_col = input_args->start_col;
+    	int end_col = input_args->end_col;
+		for (int i = start_col; i < end_col; i++)
+		{
+			for (int j = 0; j < size; j++)
+			{
+				for (int k = 0; k < size; k++)
+				{
+					result_par[i][j] += matrix1[i][k] * matrix2[k][j];
+				}
+			}
+		}
+		free(input_args);
+		return NULL;
+	}
 }
 
 /**
@@ -49,7 +181,41 @@ void *mmm_par(void *args) {
  * @return the largest error between two corresponding elements
  * in the result matrices
  */
-double mmm_verify() {
-	// TODO
-	return -1;
+double mmm_verify()
+{
+	double maxErr = 0;
+	for (int i = 0; i < size; i++)
+	{
+		for (int j = 0; j < size; j++)
+		{
+			//if bigger than max err, it's our new max err
+			if (abs(result_par[i][j] - result_seq[i][j]) > maxErr)
+			{
+				maxErr = abs(result_par[i][j] - result_seq[i][j]);
+			}
+		}
+	}
+	return maxErr;
+}
+
+//prints both matrixes, used for debugging and not in final code.
+void print_both(){
+	printf("seq result:\n");
+	for (int i = 0; i < size; i++)
+	{
+		for (int j = 0; j < size; j++)
+		{
+			printf("%.2f ", result_seq[i][j]);
+		}
+		printf("\n");
+	}
+	printf("\npar result:\n");
+	for (int i = 0; i < size; i++)
+	{
+		for (int j = 0; j < size; j++)
+		{
+			printf("%.2f ", result_par[i][j]);
+		}
+		printf("\n");
+	}
 }
